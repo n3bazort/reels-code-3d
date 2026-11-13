@@ -1,0 +1,59 @@
+name: Render video
+# Graba el video de video.json en tramos paralelos y deja el MP4 en la rama "output".
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['src/**', 'video.json', 'render.mjs', 'index.html', '.github/workflows/render.yml']
+permissions:
+  contents: write
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: m
+        run: |
+          node -e "const v=require('./video.json');const n=v.segments,d=v.duration/n;console.log('matrix='+JSON.stringify({seg:[...Array(n)].map((_,i)=>({i:String(i).padStart(2,'0'),from:+(i*d).toFixed(3),to:+((i+1)*d).toFixed(3)}))}))" >> "$GITHUB_OUTPUT"
+  render:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci
+      - run: ENTRY=$(node -p "require('./video.json').entry") npm run bundle
+      - run: node render.mjs seg_${{ matrix.seg.i }}.mp4 ${{ matrix.seg.from }} ${{ matrix.seg.to }}
+      - uses: actions/upload-artifact@v4
+        with: { name: 'seg_${{ matrix.seg.i }}', path: 'seg_${{ matrix.seg.i }}.mp4', retention-days: 1 }
+  merge:
+    needs: render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: segs, merge-multiple: true }
+      - name: Unir tramos y efectos
+        run: |
+          NAME=$(node -p "require('./video.json').name"); SFX=$(node -p "require('./video.json').sfx || ''"); DUR=$(node -p "require('./video.json').duration")
+          ls segs/seg_*.mp4 | sort | sed "s/.*/file '&'/" > list.txt
+          ffmpeg -v error -y -f concat -safe 0 -i list.txt -c copy video.mp4
+          if [ -n "$SFX" ]; then
+            pip install -q numpy scipy && python3 "$SFX" sfx.wav
+            ffmpeg -v error -y -i video.mp4 -i sfx.wav -filter_complex "[1:a]apad[a]" -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 160k -t "$DUR" "$NAME.mp4"
+          else mv video.mp4 "$NAME.mp4"; fi
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with: { name: video-final, path: '${{ env.NAME }}.mp4' }
+      - name: Publicar en la rama output
+        run: |
+          mkdir out && cp "$NAME.mp4" out/ && cd out && git init -q -b output
+          git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f "$NAME.mp4" && git commit -qm "Render $NAME (${GITHUB_SHA::7})"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" output

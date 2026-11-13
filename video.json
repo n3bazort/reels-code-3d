@@ -1,0 +1,1 @@
+{ "name": "cohete", "entry": "src/rocket.js", "duration": 70, "segments": 14, "sfx": "audio_rocket.py" }

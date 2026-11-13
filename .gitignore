@@ -1,0 +1,5 @@
+node_modules/
+bundle.js
+*.mp4
+*.wav
+still_*.jpg
